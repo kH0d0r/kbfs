@@ -3055,7 +3055,7 @@ func (cr *ConflictResolver) doResolve(ctx context.Context, ci conflictInput) {
 		}
 
 		// Sync everything from memory to the journal.
-		err = cr.fbo.syncAllLocked(ctx, lState)
+		err = cr.fbo.syncAllLocked(ctx, lState, NoExcl)
 		if err != nil {
 			return
 		}
