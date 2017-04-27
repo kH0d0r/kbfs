@@ -134,6 +134,8 @@ type deCacheEntry struct {
 	// dels is a set of the names that have been removed from the
 	// DirBlock for the BlockPointer that maps to this struct.
 	dels map[string]bool
+	// addedSyms is a map of the dir entries for added sym links.
+	addedSyms map[string]DirEntry
 }
 
 type deferredState struct {
@@ -825,10 +827,20 @@ func (fbo *folderBlockOps) addDirEntryInCacheLocked(lState *lockState, dir path,
 	newName string, newDe DirEntry) {
 	fbo.blockLock.AssertLocked(lState)
 	cacheEntry := fbo.deCache[dir.tailPointer().Ref()]
-	if cacheEntry.adds == nil {
-		cacheEntry.adds = make(map[string]BlockPointer)
+	if newDe.IsInitialized() {
+		if cacheEntry.adds == nil {
+			cacheEntry.adds = make(map[string]BlockPointer)
+		}
+		cacheEntry.adds[newName] = newDe.BlockPointer
+	} else if newDe.Type == Sym {
+		if cacheEntry.addedSyms == nil {
+			cacheEntry.addedSyms = make(map[string]DirEntry)
+		}
+		cacheEntry.addedSyms[newName] = newDe
+	} else {
+		panic("Unexpected uninitialized dir entry")
 	}
-	cacheEntry.adds[newName] = newDe.BlockPointer
+
 	// In case it was removed in the cache but not flushed yet.
 	delete(cacheEntry.dels, newName)
 
@@ -873,6 +885,7 @@ func (fbo *folderBlockOps) removeDirEntryInCacheLocked(lState *lockState,
 	cacheEntry.dels[oldName] = true
 	// In case it was added in the cache but not flushed yet.
 	delete(cacheEntry.adds, oldName)
+	delete(cacheEntry.addedSyms, oldName)
 
 	// Update just the mtime/ctime on the directory.
 	now := fbo.nowUnixNano()
@@ -994,11 +1007,13 @@ func (fbo *folderBlockOps) ClearCachedAdd(
 	}
 
 	delete(cacheEntry.adds, name)
+	delete(cacheEntry.addedSyms, name)
 
 	// If the entry is totally empty, we can just delete it.
 	if !cacheEntry.dirEntry.IsInitialized() &&
 		cacheEntry.dirEntry.Mtime == 0 && cacheEntry.dirEntry.Ctime == 0 &&
-		len(cacheEntry.adds) == 0 && len(cacheEntry.dels) == 0 {
+		len(cacheEntry.adds) == 0 && len(cacheEntry.dels) == 0 &&
+		len(cacheEntry.addedSyms) == 0 {
 		delete(fbo.deCache, dir.tailPointer().Ref())
 		return
 	}
@@ -1116,6 +1131,15 @@ func (fbo *folderBlockOps) updateWithDirtyEntriesLocked(ctx context.Context,
 		dblockCopy.Children[k] = de.dirEntry
 	}
 
+	// Add cached symlink additions to the copy.
+	for k, de := range dirCacheEntry.addedSyms {
+		if dblockCopy == nil {
+			dblockCopy = dblock.DeepCopy()
+		}
+
+		dblockCopy.Children[k] = de
+	}
+
 	// Remove cached removals from the copy.
 	for k := range dirCacheEntry.dels {
 		_, ok := dblock.Children[k]
@@ -1134,6 +1158,12 @@ func (fbo *folderBlockOps) updateWithDirtyEntriesLocked(ctx context.Context,
 	for k, v := range dblock.Children {
 		_, added := dirCacheEntry.adds[k]
 		if added {
+			// Already processed above.
+			continue
+		}
+
+		_, addedSym := dirCacheEntry.addedSyms[k]
+		if addedSym {
 			// Already processed above.
 			continue
 		}
