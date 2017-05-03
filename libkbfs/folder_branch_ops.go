@@ -4090,6 +4090,10 @@ func (fbo *folderBranchOps) getUnlinkPathBeforeUpdatingPointers(
 		node = fbo.nodeCache.Get(realOp.Dir.Unref.Ref())
 		childName = realOp.OldName
 	case *renameOp:
+		if len(op.Unrefs()) == 0 {
+			// This rename didn't unref anything.
+			return path{}, DirEntry{}, false, nil
+		}
 		if realOp.NewDir.Unref != zeroPtr {
 			// moving to a new dir
 			if realOp.NewDir.Ref == realOp.NewDir.Unref {
